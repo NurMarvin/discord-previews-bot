@@ -357,12 +357,18 @@ setInterval(async () => {
     'https://builds.discord.sale/api/builds/raw?page=1&size=2'
   );
 
-  const channelId = BigInt(process.env.BUILDS_CHANNEL_ID!);
-
-  const buildsChannel = (client.channels.cache.get(`${channelId}`) ||
-    (await client.channels.fetch(`${channelId}`))) as Discord.NewsChannel;
-
+  const buildsChannelId = BigInt(process.env.BUILDS_CHANNEL_ID!);
+  const buildsChannel = (client.channels.cache.get(`${buildsChannelId}`) ||
+    (await client.channels.fetch(`${buildsChannelId}`))) as Discord.NewsChannel;
+  const buildChangesChannelId = BigInt(process.env.BUILD_CHANGES_CHANNEL_ID!);
+  const buildChangesChannel = (client.channels.cache.get(
+    `${buildChangesChannelId}`
+  ) ||
+    (await client.channels.fetch(
+      `${buildChangesChannelId}`
+    ))) as Discord.NewsChannel;
   const buildHash = response.data.data[0].buildHash;
+
   if (buildHash === lastBuildHash) return;
 
   console.log('New Build detected:', buildHash);
@@ -383,17 +389,23 @@ setInterval(async () => {
   );
 
   lastBuildHash = buildHash;
-  
+
   const differences = await compareBuilds(build, previousBuild);
+  const totalChanges = getTotalChangeCount(differences);
+
+  const [webpackLoader, classMap, typescript, main] = build.rootScripts;
 
   buildEmbed.setDescription(
-    `This build has a total of ${getTotalChangeCount(
-      differences
-    )} notable changes.`
+    `This build has a total of ${totalChanges} notable changes.\n\n**Webpack Loader**: [${webpackLoader}](https://canary.discord.com/assets/${webpackLoader})\n**Class Map**: [${classMap}](https://canary.discord.com/assets/${classMap})\n**Typescript**: [${typescript}](https://canary.discord.com/assets/${typescript})\n**Main**: [${main}](https://canary.discord.com/assets/${main})\n**Stylesheet**: [${build.stylesheet}](https://canary.discord.com/assets/${build.stylesheet})`
   );
 
   const message = await buildsChannel.send({ embeds: [buildEmbed] });
   await message.crosspost();
+
+  if (totalChanges > 0) {
+    const message = await buildChangesChannel.send({ embeds: [buildEmbed] });
+    await message.crosspost();
+  }
 
   if (hasChanged(differences.globalEnvs)) {
     const globalEnvEmbed = new Discord.MessageEmbed()
@@ -406,7 +418,7 @@ setInterval(async () => {
 
     applyStringChanges(globalEnvEmbed, differences.globalEnvs);
 
-    const message = await buildsChannel.send({
+    const message = await buildChangesChannel.send({
       content: `<@&${process.env.GLOBAL_ENV_ROLE_ID}>`,
       embeds: [globalEnvEmbed],
     });
@@ -424,7 +436,7 @@ setInterval(async () => {
 
     applyStringChanges(globalEnvEmbed, differences.strings);
 
-    const message = await buildsChannel.send({
+    const message = await buildChangesChannel.send({
       content: `<@&${process.env.STRINGS_ROLE_ID}>`,
       embeds: [globalEnvEmbed],
     });
@@ -452,7 +464,7 @@ setInterval(async () => {
       differences.experiments.removed
     );
 
-    const message = await buildsChannel.send({
+    const message = await buildChangesChannel.send({
       content: `<@&${process.env.EXPERIMENTS_ROLE_ID}>`,
       embeds: [experimentsEmbed, ...addedEmbeds, ...removedEmbeds],
     });
