@@ -9,7 +9,9 @@ import { DateTime } from 'luxon';
 
 dotenv.config();
 
-const client = new Discord.Client();
+const client = new Discord.Client({
+  intents: ['GUILD_MESSAGES'],
+});
 
 client.on('ready', () => {
   console.log('Logged in as', client.user?.tag);
@@ -313,13 +315,14 @@ const applyStringChanges = (embed: MessageEmbed, changes: Changes<string>) => {
 };
 
 const generateExperimentChangesEmbeds = async (
-  channel: Discord.NewsChannel,
   title: string,
   color: number,
   field: {
     [key: string]: Experiment;
   }
 ) => {
+  const embeds = [];
+
   for (let [id, experiment] of Object.entries(field)) {
     const experimentEmbed = new Discord.MessageEmbed()
       .setTitle(`Experiment ${title}: ${experiment.label}`)
@@ -341,8 +344,10 @@ const generateExperimentChangesEmbeds = async (
       );
     });
 
-    await channel.send(experimentEmbed);
+    embeds.push(experimentEmbed);
   }
+
+  return embeds;
 };
 
 let lastBuildHash: string;
@@ -352,9 +357,10 @@ setInterval(async () => {
     'https://builds.discord.sale/api/builds/raw?page=1&size=2'
   );
 
-  const buildsChannel = client.channels.cache.get(
-    process.env.BUILDS_CHANNEL_ID!
-  ) as Discord.NewsChannel;
+  const channelId = BigInt(process.env.BUILDS_CHANNEL_ID!);
+
+  const buildsChannel = (client.channels.cache.get(`${channelId}`) ||
+    (await client.channels.fetch(`${channelId}`))) as Discord.NewsChannel;
 
   const buildHash = response.data.data[0].buildHash;
   if (buildHash === lastBuildHash) return;
@@ -377,7 +383,7 @@ setInterval(async () => {
   );
 
   lastBuildHash = buildHash;
-
+  
   const differences = await compareBuilds(build, previousBuild);
 
   buildEmbed.setDescription(
@@ -386,7 +392,8 @@ setInterval(async () => {
     )} notable changes.`
   );
 
-  await buildsChannel.send(buildEmbed);
+  const message = await buildsChannel.send({ embeds: [buildEmbed] });
+  await message.crosspost();
 
   if (hasChanged(differences.globalEnvs)) {
     const globalEnvEmbed = new Discord.MessageEmbed()
@@ -399,10 +406,11 @@ setInterval(async () => {
 
     applyStringChanges(globalEnvEmbed, differences.globalEnvs);
 
-    await buildsChannel.send({
+    const message = await buildsChannel.send({
       content: `<@&${process.env.GLOBAL_ENV_ROLE_ID}>`,
-      embed: globalEnvEmbed,
+      embeds: [globalEnvEmbed],
     });
+    await message.crosspost();
   }
 
   if (hasChanged(differences.strings)) {
@@ -416,10 +424,11 @@ setInterval(async () => {
 
     applyStringChanges(globalEnvEmbed, differences.strings);
 
-    await buildsChannel.send({
+    const message = await buildsChannel.send({
       content: `<@&${process.env.STRINGS_ROLE_ID}>`,
-      embed: globalEnvEmbed,
+      embeds: [globalEnvEmbed],
     });
+    await message.crosspost();
   }
 
   if (hasChanged(differences.experiments)) {
@@ -431,23 +440,22 @@ setInterval(async () => {
         )} changes to experiments.`
       );
 
-    await buildsChannel.send({
-      content: `<@&${process.env.EXPERIMENTS_ROLE_ID}>`,
-      embed: experimentsEmbed,
-    });
-
-    await generateExperimentChangesEmbeds(
-      buildsChannel,
+    const addedEmbeds = await generateExperimentChangesEmbeds(
       'Added',
       0x4dac68,
       differences.experiments.added
     );
 
-    await generateExperimentChangesEmbeds(
-      buildsChannel,
+    const removedEmbeds = await generateExperimentChangesEmbeds(
       'Removed',
       0xfc4130,
       differences.experiments.removed
     );
+
+    const message = await buildsChannel.send({
+      content: `<@&${process.env.EXPERIMENTS_ROLE_ID}>`,
+      embeds: [experimentsEmbed, ...addedEmbeds, ...removedEmbeds],
+    });
+    await message.crosspost();
   }
 }, 5000);
