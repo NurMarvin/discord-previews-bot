@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "axios": "^0.21.1",
-    "discord.js": "https://github.com/discordjs/discord.js#5e706941fcf2977ac73ed42d3207abe2364f64b1",
+    "discord.js": "git://github.com/discordjs/discord.js.git#5e706941fcf2977ac73ed42d3207abe2364f64b1",
     "dotenv": "^10.0.0",
     "luxon": "^2.0.1"
   }
