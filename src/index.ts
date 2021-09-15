@@ -6,6 +6,7 @@ import Discord, { MessageEmbed } from 'discord.js';
 import dotenv from 'dotenv';
 import axios from 'axios';
 import { DateTime } from 'luxon';
+import css, { Rule, Declaration } from 'css';
 
 dotenv.config();
 
@@ -70,16 +71,24 @@ interface Changes<T> {
   removed: { [key: string]: T };
 }
 
+type CSSRule = { [key: string]: string | undefined };
+
 interface BuildDifferences {
   experiments: Changes<Experiment>;
   strings: Changes<string>;
   globalEnvs: Changes<string>;
+  cssRules: Changes<CSSRule>;
   csp?: ChangedValue<string>;
 }
 
-const getStringsForBuild = async (
+interface ExtraInformation {
+  strings: { [key: string]: string };
+  cssRules: { [key: string]: CSSRule };
+}
+
+const getExtraInformationForBuild = async (
   build: Build
-): Promise<{ [key: string]: string }> => {
+): Promise<ExtraInformation> => {
   const script = build.rootScripts[3];
   const response = await axios.get<string>(
     `https://canary.discord.com/assets/${script}`
@@ -95,14 +104,12 @@ const getStringsForBuild = async (
   let strings;
 
   for (let i = 0; i < modules.length; i++) {
-    // Skip early modules that don't have any strings
-    if (i < 1000) continue;
-
     try {
       const thisObject = {};
       const moduleObject: any = {};
+      const args = [, {}];
       // This is also very insecure, but I still like playing with fire
-      modules[i].call(thisObject, moduleObject);
+      modules[i].call(thisObject, moduleObject, ...args);
 
       if (
         moduleObject.exports &&
@@ -114,7 +121,43 @@ const getStringsForBuild = async (
     } catch (e) {}
   }
 
-  return strings;
+  const cssResponse = await axios.get<string>(
+    `https://canary.discord.com/assets/${build.stylesheet}`
+  );
+  const cssAst = css.parse(cssResponse.data);
+
+  const cssRules: { [key: string]: CSSRule } = {};
+
+  cssAst.stylesheet?.rules.forEach(styleRule => {
+    if (styleRule.type === 'rule') {
+      const rule = styleRule as Rule;
+
+      rule.selectors?.forEach(selector => {
+        cssRules[selector] = rule
+          .declarations!.map(styleDeclaration => {
+            if (styleDeclaration.type === 'declaration') {
+              const declaration = styleDeclaration as Declaration;
+
+              if (!declaration.property) {
+                return {};
+              }
+
+              return {
+                [declaration.property]: declaration.value,
+              };
+            }
+
+            return {};
+          })
+          .reduce((a, b) => ({ ...a, ...b }), {});
+      });
+    }
+  });
+
+  return {
+    strings,
+    cssRules,
+  };
 };
 
 /**
@@ -196,8 +239,14 @@ const compareBuilds = async (a: Build, b: Build): Promise<BuildDifferences> => {
     removed: removedExperiments,
   };
 
-  const stringsA = await getStringsForBuild(a);
-  const stringsB = await getStringsForBuild(b);
+  const {
+    strings: stringsA,
+    cssRules: cssRulesA,
+  } = await getExtraInformationForBuild(a);
+  const {
+    strings: stringsB,
+    cssRules: cssRulesB,
+  } = await getExtraInformationForBuild(b);
 
   const addedStrings = Object.keys(stringsA)
     .filter(string => {
@@ -237,6 +286,59 @@ const compareBuilds = async (a: Build, b: Build): Promise<BuildDifferences> => {
     removed: removedStrings,
   };
 
+  const addedCSSRules = Object.keys(cssRulesA)
+    .filter(cssClass => {
+      return !cssRulesB.hasOwnProperty(cssClass);
+    })
+    .map(cssRule => ({ [cssRule]: cssRulesA[cssRule] }))
+    .reduce((a, b) => ({ ...a, ...b }), {});
+
+  const removedCSSRules = Object.keys(cssRulesB)
+    .filter(cssClass => {
+      return !cssRulesA.hasOwnProperty(cssClass);
+    })
+    .map(cssRule => ({ [cssRule]: cssRulesB[cssRule] }))
+    .reduce((a, b) => ({ ...a, ...b }), {});
+
+  const updatedCSSRules = Object.keys(cssRulesA)
+    .filter(cssRule => {
+      const cssRuleA = cssRulesA[cssRule];
+      const cssRuleB = cssRulesB[cssRule];
+
+      if (cssRule === '.playingText-3KIkt6') {
+        // console.log(cssRuleA, cssRuleB);
+      }
+
+      if (!cssRuleA || !cssRuleB) return false;
+
+      let difference = false;
+
+      Object.keys(cssRuleA).forEach(property => {
+        if (cssRuleB[property] !== cssRuleA[property]) {
+          difference = true;
+        }
+      });
+
+      return difference;
+    })
+    .map(cssRule => {
+      return {
+        [cssRule]: {
+          oldValue: cssRulesB[cssRule],
+          newValue: cssRulesA[cssRule],
+        },
+      };
+    })
+    .reduce((a, b) => ({ ...a, ...b }), {});
+
+  // console.log(updatedCSSRules);
+
+  buildDifferences.cssRules = {
+    added: addedCSSRules,
+    updated: updatedCSSRules,
+    removed: removedCSSRules,
+  };
+
   return buildDifferences as BuildDifferences;
 };
 
@@ -252,7 +354,8 @@ const getTotalChangeCount = (differences: BuildDifferences) => {
   return (
     getChangeCount(differences.strings) +
     getChangeCount(differences.globalEnvs) +
-    getChangeCount(differences.experiments)
+    getChangeCount(differences.experiments) +
+    getChangeCount(differences.cssRules)
   );
 };
 
@@ -350,7 +453,82 @@ const generateExperimentChangesEmbeds = async (
   return embeds;
 };
 
-let lastBuildHash: string;
+const generateCssRuleChangesEmbeds = async (cssRules: Changes<CSSRule>) => {
+  const embeds = [];
+
+  const generateCodeblock = (selector: string, declarations: CSSRule) => {
+    return (
+      `\`\`\`css\n${selector} {\n` +
+      Object.entries(declarations)
+        .map(([key, value]) => {
+          return `  ${key}: ${value};`;
+        })
+        .join('\n') +
+      '\n}\n```'
+    );
+  };
+
+  for (let [selector, declarations] of Object.entries(cssRules.added)) {
+    const cssRuleEmbed = new Discord.MessageEmbed()
+      .setTitle(`CSS Rule Added: ${selector}`)
+      .setDescription(generateCodeblock(selector, declarations))
+      .setColor(0x4dac68);
+
+    embeds.push(cssRuleEmbed);
+  }
+  // console.log(cssRules.updated);
+
+  for (let [
+    selector,
+    { oldValue: oldDeclarations, newValue: newDeclarations },
+  ] of Object.entries(cssRules.updated)) {
+    let declarations = '';
+
+    const keys = new Set([
+      ...Object.keys(oldDeclarations),
+      ...Object.keys(newDeclarations),
+    ]);
+
+    for (let key of Array.from(keys)) {
+      const oldValue = oldDeclarations[key];
+      const newValue = newDeclarations[key];
+
+      if (newValue !== oldValue) {
+        if (oldValue) {
+          declarations += `-  ${key}: ${oldValue};\n`;
+        }
+
+        if (newValue) {
+          declarations += `+  ${key}: ${newValue};\n`;
+        }
+      }
+    }
+    const codeblock =
+      declarations.length > 0
+        ? `\`\`\`diff\n${selector} {\n` + declarations + '}\n```'
+        : 'No declarations';
+
+    const cssRuleEmbed = new Discord.MessageEmbed()
+      .setTitle(`CSS Rule Updated: ${selector}`)
+      .setDescription(codeblock)
+      .setColor(0x5865f2);
+
+    embeds.push(cssRuleEmbed);
+  }
+
+  for (let [selector, declarations] of Object.entries(cssRules.removed)) {
+    const cssRuleEmbed = new Discord.MessageEmbed()
+      .setTitle(`CSS Rule Removed: ${selector}`)
+      .setDescription(generateCodeblock(selector, declarations))
+      .setColor(0xfc4130);
+
+    embeds.push(cssRuleEmbed);
+  }
+
+  return embeds;
+};
+
+let lastBuildHash: string = '2357240b19143b18c039b7ada1d24b6ff5916b1d';
 
 setInterval(async () => {
   const response = await axios.get<PaginatedBuildsResponse>(
@@ -358,8 +536,9 @@ setInterval(async () => {
   );
 
   const buildsChannelId = BigInt(process.env.BUILDS_CHANNEL_ID!);
-  const buildsChannel = (client.channels.cache.get(`${buildsChannelId}`) ||
-    (await client.channels.fetch(`${buildsChannelId}`))) as Discord.NewsChannel;
+  const buildsChannel = (await client.channels.fetch(
+    `${buildsChannelId}`
+  )) as Discord.NewsChannel;
   const buildChangesChannelId = BigInt(process.env.BUILD_CHANGES_CHANNEL_ID!);
   const buildChangesChannel = (client.channels.cache.get(
     `${buildChangesChannelId}`
@@ -400,11 +579,11 @@ setInterval(async () => {
   );
 
   const message = await buildsChannel.send({ embeds: [buildEmbed] });
-  await message.crosspost();
+  // await message.crosspost();
 
   if (totalChanges > 0) {
     const message = await buildChangesChannel.send({ embeds: [buildEmbed] });
-    await message.crosspost();
+    // await message.crosspost();
   }
 
   if (hasChanged(differences.globalEnvs)) {
@@ -412,7 +591,7 @@ setInterval(async () => {
       .setTitle('Global Env Changes')
       .setDescription(
         `This build has a total of ${getChangeCount(
-          differences.experiments
+          differences.globalEnvs
         )} changes to the global env.`
       );
 
@@ -422,25 +601,7 @@ setInterval(async () => {
       content: `<@&${process.env.GLOBAL_ENV_ROLE_ID}>`,
       embeds: [globalEnvEmbed],
     });
-    await message.crosspost();
-  }
-
-  if (hasChanged(differences.strings)) {
-    const globalEnvEmbed = new Discord.MessageEmbed()
-      .setTitle('String Changes')
-      .setDescription(
-        `This build has a total of ${getChangeCount(
-          differences.strings
-        )} changes to strings.`
-      );
-
-    applyStringChanges(globalEnvEmbed, differences.strings);
-
-    const message = await buildChangesChannel.send({
-      content: `<@&${process.env.STRINGS_ROLE_ID}>`,
-      embeds: [globalEnvEmbed],
-    });
-    await message.crosspost();
+    // await message.crosspost();
   }
 
   if (hasChanged(differences.experiments)) {
@@ -468,6 +629,59 @@ setInterval(async () => {
       content: `<@&${process.env.EXPERIMENTS_ROLE_ID}>`,
       embeds: [experimentsEmbed, ...addedEmbeds, ...removedEmbeds],
     });
-    await message.crosspost();
+    // await message.crosspost();
+  }
+
+  if (hasChanged(differences.cssRules)) {
+    const cssRulesEmbed = new Discord.MessageEmbed()
+      .setTitle('CSS Rule Changes')
+      .setDescription(
+        `This build has a total of ${getChangeCount(
+          differences.cssRules
+        )} changes to CSS rules.`
+      );
+
+    const embeds = await generateCssRuleChangesEmbeds(differences.cssRules);
+        
+    const chunkedEmbeds = embeds.reduce((resultArray, item, index) => { 
+      const chunkIndex = Math.floor(index/10);
+    
+      if(!resultArray[chunkIndex]) {
+        resultArray[chunkIndex] = new Array<MessageEmbed>() // start a new chunk
+      }
+    
+      resultArray[chunkIndex].push(item)
+    
+      return resultArray
+    }, new Array<MessageEmbed[]>());
+
+    const message = await buildChangesChannel.send({
+      content: `<@&${process.env.CSS_RULES_ROLE_ID}>`,
+      embeds: [cssRulesEmbed],
+    });
+
+    for (const chunk of chunkedEmbeds) {
+      await message.channel.send({ embeds: chunk });
+    }
+
+    // await message.crosspost();
+  }
+
+  if (hasChanged(differences.strings)) {
+    const globalEnvEmbed = new Discord.MessageEmbed()
+      .setTitle('String Changes')
+      .setDescription(
+        `This build has a total of ${getChangeCount(
+          differences.strings
+        )} changes to strings.`
+      );
+
+    applyStringChanges(globalEnvEmbed, differences.strings);
+
+    const message = await buildChangesChannel.send({
+      content: `<@&${process.env.STRINGS_ROLE_ID}>`,
+      embeds: [globalEnvEmbed],
+    });
+    // await message.crosspost();
   }
 }, 5000);

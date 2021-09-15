@@ -18,7 +18,6 @@
     "lint": "tsdx lint",
     "prepare": "tsdx build"
   },
-  "peerDependencies": {},
   "husky": {
     "hooks": {
       "pre-commit": "tsdx lint"
@@ -34,6 +33,7 @@
   "author": "Marvin Witt",
   "module": "dist/discord-previews-bot.esm.js",
   "devDependencies": {
+    "@types/css": "^0.0.33",
     "@types/luxon": "^1.27.1",
     "husky": "^7.0.1",
     "tsdx": "^0.14.1",
@@ -42,7 +42,8 @@
   },
   "dependencies": {
     "axios": "^0.21.1",
-    "discord.js": "git://github.com/discordjs/discord.js.git#5e706941fcf2977ac73ed42d3207abe2364f64b1",
+    "css": "^3.0.0",
+    "discord.js": "^13.1.0",
     "dotenv": "^10.0.0",
     "luxon": "^2.0.1"
   }
