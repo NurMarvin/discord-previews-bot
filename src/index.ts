@@ -396,7 +396,7 @@ setInterval(async () => {
   const [webpackLoader, classMap, typescript, main] = build.rootScripts;
 
   buildEmbed.setDescription(
-    `This build has a total of ${totalChanges} notable changes.\n\n**Webpack Loader**: [${webpackLoader}](https://canary.discord.com/assets/${webpackLoader})\n**Class Map**: [${classMap}](https://canary.discord.com/assets/${classMap})\n**Typescript**: [${typescript}](https://canary.discord.com/assets/${typescript})\n**Main**: [${main}](https://canary.discord.com/assets/${main})\n**Stylesheet**: [${build.stylesheet}](https://canary.discord.com/assets/${build.stylesheet})`
+    `This build has a total of ${totalChanges} notable changes.\n\n**Webpack Loader**: [${webpackLoader}](https://canary.discord.com/assets/${webpackLoader})\n**Class Map**: [${classMap}.js](https://canary.discord.com/assets/${classMap}.js)\n**Typescript**: [${typescript}](https://canary.discord.com/assets/${typescript})\n**Main**: [${main}](https://canary.discord.com/assets/${main})\n**Stylesheet**: [${build.stylesheet}](https://canary.discord.com/assets/${build.stylesheet})`
   );
 
   const message = await buildsChannel.send({ embeds: [buildEmbed] });
